@@ -2,8 +2,8 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Treinador VOR Interativo - Touch Fix Forte</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Treinador VOR Interativo - iOS Touch Definitivo</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -14,24 +14,8 @@
       min-height: 100%;
       background: #f1f5f9;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      overscroll-behavior: none;
     }
   
-    #vor-map {
-      touch-action: none;
-      -ms-touch-action: none;
-      user-select: none;
-      -webkit-user-select: none;
-      -webkit-touch-callout: none;
-    }
-
-    .no-scroll-while-dragging,
-    .no-scroll-while-dragging body {
-      overflow: hidden !important;
-      position: fixed;
-      width: 100%;
-    }
-
     #vor-map,
     #vor-map * {
       touch-action: none !important;
@@ -41,7 +25,40 @@
       -webkit-touch-callout: none !important;
     }
 
+    body.vor-touch-lock {
+      overflow: hidden !important;
+      position: fixed !important;
+      width: 100% !important;
+    }
+
 </style>
+
+  <script>
+    (function () {
+      function isInsideVorMap(target) {
+        return target && target.closest && target.closest("#vor-map");
+      }
+
+      document.addEventListener("touchstart", function (e) {
+        if (isInsideVorMap(e.target)) {
+          e.preventDefault();
+        }
+      }, { passive: false, capture: true });
+
+      document.addEventListener("touchmove", function (e) {
+        if (isInsideVorMap(e.target)) {
+          e.preventDefault();
+        }
+      }, { passive: false, capture: true });
+
+      document.addEventListener("gesturestart", function (e) {
+        if (isInsideVorMap(e.target)) {
+          e.preventDefault();
+        }
+      }, { passive: false, capture: true });
+    })();
+  </script>
+
 </head>
 <body>
   <div id="root"></div>
@@ -345,6 +362,7 @@
       const flyTick = useRef(null);
       const chronoTick = useRef(null);
       const elapsedRef = useRef(0);
+      const touchModeRef = useRef(null);
 
       const qdm = useMemo(() => bearing(aircraft, center), [aircraft]);
       const radial = useMemo(() => bearing(center, aircraft), [aircraft]);
@@ -472,25 +490,102 @@
         setTrack([initial]);
       }
 
+
+      useEffect(() => {
+        const svg = svgRef.current;
+        if (!svg) return;
+
+        const firstTouch = (event) => {
+          if (event.touches && event.touches.length) return event.touches[0];
+          if (event.changedTouches && event.changedTouches.length) return event.changedTouches[0];
+          return null;
+        };
+
+        const findAction = (target) => {
+          let node = target;
+          while (node && node !== svg) {
+            if (node.dataset && node.dataset.touchAction) return node.dataset.touchAction;
+            node = node.parentNode;
+          }
+          return null;
+        };
+
+        const startTouch = (event) => {
+          const action = findAction(event.target);
+          if (!action) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+          lockPageForTouch();
+          touchModeRef.current = action;
+
+          const t = firstTouch(event);
+          if (!t) return;
+
+          setIsFlying(false);
+
+          if (action === "rotate") {
+            setRotating(true);
+            setDragging(false);
+            rotateAircraft(t.clientX, t.clientY);
+          } else if (action === "drag") {
+            setDragging(true);
+            setRotating(false);
+            moveAircraft(t.clientX, t.clientY);
+          }
+        };
+
+        const moveTouch = (event) => {
+          const action = touchModeRef.current;
+          if (!action) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+
+          const t = firstTouch(event);
+          if (!t) return;
+
+          if (action === "rotate") rotateAircraft(t.clientX, t.clientY);
+          if (action === "drag") moveAircraft(t.clientX, t.clientY);
+        };
+
+        const endTouch = (event) => {
+          if (touchModeRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          touchModeRef.current = null;
+          setDragging(false);
+          setRotating(false);
+          unlockPageForTouch();
+        };
+
+        svg.addEventListener("touchstart", startTouch, { passive: false });
+        svg.addEventListener("touchmove", moveTouch, { passive: false });
+        svg.addEventListener("touchend", endTouch, { passive: false });
+        svg.addEventListener("touchcancel", endTouch, { passive: false });
+
+        return () => {
+          svg.removeEventListener("touchstart", startTouch);
+          svg.removeEventListener("touchmove", moveTouch);
+          svg.removeEventListener("touchend", endTouch);
+          svg.removeEventListener("touchcancel", endTouch);
+          unlockPageForTouch();
+        };
+      }, []);
+
       const selEnd = pt(center, selectedRadial, mapRadius + 60);
       const selStart = showReciprocal ? pt(center, reciprocal, mapRadius + 60) : center;
       const actualEnd = pt(center, radial, mapRadius + 38);
       const rotateHandle = pt(aircraft, heading, 78);
       const isOnSelected = Math.abs(diffRadial) <= 4;
 
-      function lockTouchScroll() {
-        document.documentElement.classList.add("no-scroll-while-dragging");
+      function lockPageForTouch() {
+        document.body.classList.add("vor-touch-lock");
       }
 
-      function unlockTouchScroll() {
-        document.documentElement.classList.remove("no-scroll-while-dragging");
-      }
-
-      function endTouchInteraction(e) {
-        if (e && e.preventDefault) e.preventDefault();
-        setDragging(false);
-        setRotating(false);
-        unlockTouchScroll();
+      function unlockPageForTouch() {
+        document.body.classList.remove("vor-touch-lock");
       }
 
 
@@ -528,20 +623,14 @@
                   viewBox="0 0 820 700"
                   className="h-[560px] xl:h-[610px] w-full rounded-3xl bg-[#eef6ef] border border-slate-200 select-none"
                   style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }}
-                  style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }}
                   onPointerMove={(e) => {
-                    if (rotating || dragging) {
-                      e.preventDefault();
-                      if (e.currentTarget.setPointerCapture) {
-                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-                      }
-                    }
+                    if (rotating || dragging) e.preventDefault();
                     if (rotating) rotateAircraft(e.clientX, e.clientY);
                     else if (dragging) moveAircraft(e.clientX, e.clientY);
                   }}
-                  onPointerUp={endTouchInteraction}
-                  onPointerCancel={endTouchInteraction}
-                  onPointerLeave={endTouchInteraction}
+                  onPointerUp={(e) => { e.preventDefault(); setDragging(false); setRotating(false); unlockPageForTouch(); }}
+                  onPointerCancel={(e) => { e.preventDefault(); setDragging(false); setRotating(false); unlockPageForTouch(); }}
+                  onPointerLeave={(e) => { e.preventDefault(); setDragging(false); setRotating(false); unlockPageForTouch(); }}
                 >
                   <defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0 L0 0 0 30" fill="none" stroke="#cbd5e1" strokeWidth="1" opacity="0.55" /></pattern><linearGradient id="mapBg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stopColor="#ecfeff" /><stop offset="1" stopColor="#f7fee7" /></linearGradient><marker id="arrowYellow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#facc15" /></marker><marker id="arrowViolet" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7c3aed" /></marker></defs>
                   <rect width="820" height="700" fill="url(#mapBg)" /><rect width="820" height="700" fill="url(#grid)" /><path d="M30 575 C190 525,270 640,430 575 S675 480,790 575" fill="none" stroke="#86efac" strokeWidth="32" opacity="0.28" /><path d="M70 95 C190 145,255 75,390 124 S660 185,760 110" fill="none" stroke="#93c5fd" strokeWidth="18" opacity="0.28" />
@@ -676,15 +765,13 @@
                   />
 
                   <g
+                    data-touch-action="rotate"
                     transform={`translate(${rotateHandle.x} ${rotateHandle.y})`}
                     style={{ cursor: "grab" }}
                     onPointerDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      lockTouchScroll();
-                      if (e.currentTarget.setPointerCapture) {
-                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-                      }
+                      lockPageForTouch();
                       setRotating(true);
                       setDragging(false);
                       rotateAircraft(e.clientX, e.clientY);
@@ -695,12 +782,10 @@
                   </g>
 
                   <g
+                    data-touch-action="drag"
                     onPointerDown={(e) => {
                       e.preventDefault();
-                      lockTouchScroll();
-                      if (e.currentTarget.setPointerCapture) {
-                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-                      }
+                      lockPageForTouch();
                       setDragging(true);
                       setRotating(false);
                       moveAircraft(e.clientX, e.clientY);
@@ -818,22 +903,5 @@
 
     ReactDOM.createRoot(document.getElementById("root")).render(<TreinadorVORInterativo />);
   </script>
-
-  <script>
-    document.addEventListener("touchmove", function (e) {
-      if (document.documentElement.classList.contains("no-scroll-while-dragging")) {
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    document.addEventListener("touchend", function () {
-      document.documentElement.classList.remove("no-scroll-while-dragging");
-    }, { passive: false });
-
-    document.addEventListener("touchcancel", function () {
-      document.documentElement.classList.remove("no-scroll-while-dragging");
-    }, { passive: false });
-  </script>
-
 </body>
 </html>
