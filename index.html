@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Treinador VOR Interativo - Setores de espera</title>
+  <title>Treinador VOR Interativo - Setores corrigidos</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -160,21 +160,31 @@
 
     function holdEntrySectors(c, inbound, side, r) {
       const outbound = norm360(inbound + 180);
+
+      // Setores de entrada baseados na posição da aeronave em relação ao fixo.
+      // Para espera padrão à direita:
+      // - Direta: lado da espera
+      // - Paralela: faixa menor do lado não protegido, junto ao outbound
+      // - Deslocada: faixa maior do lado não protegido, junto ao inbound
+      // Isso faz uma aeronave no quadrante superior esquerdo, para inbound 000°,
+      // aparecer corretamente como Setor II / Deslocada.
       if (side === "right") {
         return {
           circleRadius: r,
           direct: { start: inbound, end: outbound, mid: norm360(inbound + 90), label: "Setor III", sub: "Direta" },
-          teardrop: { start: outbound, end: outbound + 70, mid: norm360(outbound + 35), label: "Setor II", sub: "Deslocada" },
-          parallel: { start: outbound + 70, end: inbound + 360, mid: norm360(outbound + 125), label: "Setor I", sub: "Paralela" },
+          parallel: { start: outbound, end: outbound + 70, mid: norm360(outbound + 35), label: "Setor I", sub: "Paralela" },
+          teardrop: { start: outbound + 70, end: inbound + 360, mid: norm360(outbound + 125), label: "Setor II", sub: "Deslocada" },
           boundaryA: inbound,
           boundaryB: norm360(outbound + 70),
         };
       }
+
+      // Espelhado para espera não padrão à esquerda.
       return {
         circleRadius: r,
         direct: { start: outbound, end: inbound + 360, mid: norm360(inbound + 270), label: "Setor III", sub: "Direta" },
-        teardrop: { start: inbound + 110, end: outbound, mid: norm360(inbound + 145), label: "Setor II", sub: "Deslocada" },
-        parallel: { start: inbound, end: inbound + 110, mid: norm360(inbound + 55), label: "Setor I", sub: "Paralela" },
+        teardrop: { start: inbound, end: inbound + 110, mid: norm360(inbound + 55), label: "Setor II", sub: "Deslocada" },
+        parallel: { start: inbound + 110, end: outbound, mid: norm360(inbound + 145), label: "Setor I", sub: "Paralela" },
         boundaryA: outbound,
         boundaryB: norm360(inbound + 110),
       };
