@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Treinador VOR Interativo - Layout Jeppesen</title>
+  <title>Treinador VOR Interativo - Setores de espera</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -146,6 +146,38 @@
       const p2 = pt(c, mid, r);
       const p3 = pt(c, end, r);
       return `M ${c.x} ${c.y} L ${p1.x} ${p1.y} A ${r} ${r} 0 0 1 ${p2.x} ${p2.y} A ${r} ${r} 0 0 1 ${p3.x} ${p3.y} Z`;
+    }
+
+    function sectorPath(c, r, startBearing, endBearing) {
+      const start = norm360(startBearing);
+      const end = norm360(endBearing);
+      const delta = norm360(end - start);
+      const largeArc = delta > 180 ? 1 : 0;
+      const p1 = pt(c, start, r);
+      const p2 = pt(c, end, r);
+      return `M ${c.x} ${c.y} L ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} 1 ${p2.x} ${p2.y} Z`;
+    }
+
+    function holdEntrySectors(c, inbound, side, r) {
+      const outbound = norm360(inbound + 180);
+      if (side === "right") {
+        return {
+          circleRadius: r,
+          direct: { start: inbound, end: outbound, mid: norm360(inbound + 90), label: "Setor III", sub: "Direta" },
+          teardrop: { start: outbound, end: outbound + 70, mid: norm360(outbound + 35), label: "Setor II", sub: "Deslocada" },
+          parallel: { start: outbound + 70, end: inbound + 360, mid: norm360(outbound + 125), label: "Setor I", sub: "Paralela" },
+          boundaryA: inbound,
+          boundaryB: norm360(outbound + 70),
+        };
+      }
+      return {
+        circleRadius: r,
+        direct: { start: outbound, end: inbound + 360, mid: norm360(inbound + 270), label: "Setor III", sub: "Direta" },
+        teardrop: { start: inbound + 110, end: outbound, mid: norm360(inbound + 145), label: "Setor II", sub: "Deslocada" },
+        parallel: { start: inbound, end: inbound + 110, mid: norm360(inbound + 55), label: "Setor I", sub: "Paralela" },
+        boundaryA: outbound,
+        boundaryB: norm360(inbound + 110),
+      };
     }
 
     function courseTextAngle(course) {
@@ -342,6 +374,7 @@
       const [rotating, setRotating] = useState(false);
       const [lineVisibilityMode, setLineVisibilityMode] = useState(0);
       const [showToFromArea, setShowToFromArea] = useState(false);
+      const [showEntrySectors, setShowEntrySectors] = useState(false);
       const [showHolding, setShowHolding] = useState(false);
       const [holdingInbound, setHoldingInbound] = useState(360);
       const [holdingTurn, setHoldingTurn] = useState("right");
@@ -372,6 +405,8 @@
       const bankRate = speedKt > 10 ? (1091 * Math.tan(rad(bankDeg))) / speedKt : 0;
       const turnRate = turnMode === "rate" ? rateDegSec : bankRate;
       const holding = useMemo(() => holdShape(center, holdingInbound, holdingTurn, holdingLegNm), [holdingInbound, holdingTurn, holdingLegNm]);
+      const entrySectorRadius = Math.min(mapRadius * 0.8, holdingLegNm * 22 + 92);
+      const entrySectors = useMemo(() => holdEntrySectors(center, holdingInbound, holdingTurn, entrySectorRadius), [holdingInbound, holdingTurn, entrySectorRadius]);
       const toAreaPath = useMemo(() => halfDiskPath(center, mapRadius, obsCourse + 180), [obsCourse]);
       const fromAreaPath = useMemo(() => halfDiskPath(center, mapRadius, obsCourse), [obsCourse]);
 
@@ -489,6 +524,8 @@
         setElapsed(0);
         setTrack([initial]);
         setLineVisibilityMode(0);
+        setShowEntrySectors(false);
+        setShowToFromArea(false);
       }
 
 
@@ -606,6 +643,10 @@
                     <div>TO / FROM</div>
                     <div className="text-[10px] font-bold opacity-80">{showToFromArea ? "Ocultar" : "Mostrar"}</div>
                   </button>
+                  <button onClick={() => setShowEntrySectors((v) => !v)} className={`rounded-xl px-3 py-2 text-xs font-black text-white shadow-sm leading-tight ${showEntrySectors ? "bg-amber-700" : "bg-slate-900"}`}>
+                    <div>Setores</div>
+                    <div className="text-[10px] font-bold opacity-80">{showEntrySectors ? "Ocultar" : "Mostrar"}</div>
+                  </button>
                 </div>
 
                 <svg
@@ -632,6 +673,104 @@
                       <line x1={pt(center, obsCourse + 90, mapRadius).x} y1={pt(center, obsCourse + 90, mapRadius).y} x2={pt(center, obsCourse - 90, mapRadius).x} y2={pt(center, obsCourse - 90, mapRadius).y} stroke="#334155" strokeWidth="2" strokeDasharray="8 8" opacity="0.65" />
                       <text x={pt(center, obsCourse + 180, mapRadius * 0.55).x} y={pt(center, obsCourse + 180, mapRadius * 0.55).y} textAnchor="middle" className="fill-emerald-800 text-[22px] font-black" opacity="0.85">TO</text>
                       <text x={pt(center, obsCourse, mapRadius * 0.55).x} y={pt(center, obsCourse, mapRadius * 0.55).y} textAnchor="middle" className="fill-blue-800 text-[22px] font-black" opacity="0.85">FROM</text>
+                    </g>
+                  )}
+                  {showEntrySectors && (
+                    <g>
+                      <circle
+                        cx={center.x}
+                        cy={center.y}
+                        r={entrySectors.circleRadius}
+                        fill="#ffffff"
+                        opacity="0.2"
+                      />
+                      <path d={sectorPath(center, entrySectors.circleRadius, entrySectors.parallel.start, entrySectors.parallel.end)} fill="#d1d5db" opacity="0.28" />
+                      <path d={sectorPath(center, entrySectors.circleRadius, entrySectors.teardrop.start, entrySectors.teardrop.end)} fill="#bfdbfe" opacity="0.26" />
+                      <path d={sectorPath(center, entrySectors.circleRadius, entrySectors.direct.start, entrySectors.direct.end)} fill="#bbf7d0" opacity="0.24" />
+                      <circle
+                        cx={center.x}
+                        cy={center.y}
+                        r={entrySectors.circleRadius}
+                        fill="none"
+                        stroke="#ffffff"
+                        strokeWidth="4"
+                        opacity="0.75"
+                      />
+                      <circle
+                        cx={center.x}
+                        cy={center.y}
+                        r={entrySectors.circleRadius}
+                        fill="none"
+                        stroke="#111827"
+                        strokeWidth="1.5"
+                        opacity="0.82"
+                      />
+                      <line
+                        x1={pt(center, entrySectors.boundaryA, entrySectors.circleRadius).x}
+                        y1={pt(center, entrySectors.boundaryA, entrySectors.circleRadius).y}
+                        x2={pt(center, norm360(entrySectors.boundaryA + 180), entrySectors.circleRadius).x}
+                        y2={pt(center, norm360(entrySectors.boundaryA + 180), entrySectors.circleRadius).y}
+                        stroke="#ffffff"
+                        strokeWidth="3.8"
+                        opacity="0.72"
+                      />
+                      <line
+                        x1={pt(center, entrySectors.boundaryA, entrySectors.circleRadius).x}
+                        y1={pt(center, entrySectors.boundaryA, entrySectors.circleRadius).y}
+                        x2={pt(center, norm360(entrySectors.boundaryA + 180), entrySectors.circleRadius).x}
+                        y2={pt(center, norm360(entrySectors.boundaryA + 180), entrySectors.circleRadius).y}
+                        stroke="#111827"
+                        strokeWidth="1.4"
+                        opacity="0.82"
+                      />
+                      <line
+                        x1={center.x}
+                        y1={center.y}
+                        x2={pt(center, entrySectors.boundaryB, entrySectors.circleRadius).x}
+                        y2={pt(center, entrySectors.boundaryB, entrySectors.circleRadius).y}
+                        stroke="#ffffff"
+                        strokeWidth="3.8"
+                        opacity="0.72"
+                      />
+                      <line
+                        x1={center.x}
+                        y1={center.y}
+                        x2={pt(center, entrySectors.boundaryB, entrySectors.circleRadius).x}
+                        y2={pt(center, entrySectors.boundaryB, entrySectors.circleRadius).y}
+                        stroke="#111827"
+                        strokeWidth="1.4"
+                        opacity="0.82"
+                      />
+
+                      {[entrySectors.parallel, entrySectors.teardrop, entrySectors.direct].map((sector, idx) => {
+                        const labelPt = pt(center, sector.mid, entrySectors.circleRadius * 0.56);
+                        return (
+                          <g key={idx}>
+                            <text
+                              x={labelPt.x}
+                              y={labelPt.y - 4}
+                              textAnchor="middle"
+                              className="fill-slate-900 text-[14px] font-black"
+                              stroke="white"
+                              strokeWidth="3"
+                              paintOrder="stroke fill"
+                            >
+                              {sector.label}
+                            </text>
+                            <text
+                              x={labelPt.x}
+                              y={labelPt.y + 13}
+                              textAnchor="middle"
+                              className="fill-slate-800 text-[11px] font-bold"
+                              stroke="white"
+                              strokeWidth="3"
+                              paintOrder="stroke fill"
+                            >
+                              {sector.sub}
+                            </text>
+                          </g>
+                        );
+                      })}
                     </g>
                   )}
                   <Compass c={center} r={mapRadius} />
