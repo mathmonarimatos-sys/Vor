@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Treinador VOR Interativo - Preview 8 Touch Fix</title>
+  <title>Treinador VOR Interativo - Touch Fix Forte</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -24,6 +24,23 @@
       -webkit-user-select: none;
       -webkit-touch-callout: none;
     }
+
+    .no-scroll-while-dragging,
+    .no-scroll-while-dragging body {
+      overflow: hidden !important;
+      position: fixed;
+      width: 100%;
+    }
+
+    #vor-map,
+    #vor-map * {
+      touch-action: none !important;
+      -ms-touch-action: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-touch-callout: none !important;
+    }
+
 </style>
 </head>
 <body>
@@ -461,6 +478,22 @@
       const rotateHandle = pt(aircraft, heading, 78);
       const isOnSelected = Math.abs(diffRadial) <= 4;
 
+      function lockTouchScroll() {
+        document.documentElement.classList.add("no-scroll-while-dragging");
+      }
+
+      function unlockTouchScroll() {
+        document.documentElement.classList.remove("no-scroll-while-dragging");
+      }
+
+      function endTouchInteraction(e) {
+        if (e && e.preventDefault) e.preventDefault();
+        setDragging(false);
+        setRotating(false);
+        unlockTouchScroll();
+      }
+
+
       return (
         <main className="min-h-screen bg-slate-100 p-3 text-slate-900 md:p-4 xl:p-5">
           <div className="mx-auto max-w-[1800px]">
@@ -494,15 +527,21 @@
                   ref={svgRef}
                   viewBox="0 0 820 700"
                   className="h-[560px] xl:h-[610px] w-full rounded-3xl bg-[#eef6ef] border border-slate-200 select-none"
-                  style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
+                  style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }}
+                  style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none", WebkitTouchCallout: "none" }}
                   onPointerMove={(e) => {
-                    if (rotating || dragging) e.preventDefault();
+                    if (rotating || dragging) {
+                      e.preventDefault();
+                      if (e.currentTarget.setPointerCapture) {
+                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+                      }
+                    }
                     if (rotating) rotateAircraft(e.clientX, e.clientY);
                     else if (dragging) moveAircraft(e.clientX, e.clientY);
                   }}
-                  onPointerUp={(e) => { e.preventDefault(); setDragging(false); setRotating(false); }}
-                  onPointerCancel={(e) => { e.preventDefault(); setDragging(false); setRotating(false); }}
-                  onPointerLeave={(e) => { e.preventDefault(); setDragging(false); setRotating(false); }}
+                  onPointerUp={endTouchInteraction}
+                  onPointerCancel={endTouchInteraction}
+                  onPointerLeave={endTouchInteraction}
                 >
                   <defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0 L0 0 0 30" fill="none" stroke="#cbd5e1" strokeWidth="1" opacity="0.55" /></pattern><linearGradient id="mapBg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stopColor="#ecfeff" /><stop offset="1" stopColor="#f7fee7" /></linearGradient><marker id="arrowYellow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#facc15" /></marker><marker id="arrowViolet" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7c3aed" /></marker></defs>
                   <rect width="820" height="700" fill="url(#mapBg)" /><rect width="820" height="700" fill="url(#grid)" /><path d="M30 575 C190 525,270 640,430 575 S675 480,790 575" fill="none" stroke="#86efac" strokeWidth="32" opacity="0.28" /><path d="M70 95 C190 145,255 75,390 124 S660 185,760 110" fill="none" stroke="#93c5fd" strokeWidth="18" opacity="0.28" />
@@ -642,6 +681,10 @@
                     onPointerDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      lockTouchScroll();
+                      if (e.currentTarget.setPointerCapture) {
+                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+                      }
                       setRotating(true);
                       setDragging(false);
                       rotateAircraft(e.clientX, e.clientY);
@@ -654,6 +697,10 @@
                   <g
                     onPointerDown={(e) => {
                       e.preventDefault();
+                      lockTouchScroll();
+                      if (e.currentTarget.setPointerCapture) {
+                        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+                      }
                       setDragging(true);
                       setRotating(false);
                       moveAircraft(e.clientX, e.clientY);
@@ -771,5 +818,22 @@
 
     ReactDOM.createRoot(document.getElementById("root")).render(<TreinadorVORInterativo />);
   </script>
+
+  <script>
+    document.addEventListener("touchmove", function (e) {
+      if (document.documentElement.classList.contains("no-scroll-while-dragging")) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    document.addEventListener("touchend", function () {
+      document.documentElement.classList.remove("no-scroll-while-dragging");
+    }, { passive: false });
+
+    document.addEventListener("touchcancel", function () {
+      document.documentElement.classList.remove("no-scroll-while-dragging");
+    }, { passive: false });
+  </script>
+
 </body>
 </html>
