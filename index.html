@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Treinador VOR Interativo - Espera refinada preview 8</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #f1f5f9;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    const norm360 = (d) => ((d % 360) + 360) % 360;
+    const norm180 = (d) => {
+      const n = norm360(d);
+      return n > 180 ? n - 360 : n;
+    };
+    const rad = (d) => (d * Math.PI) / 180;
+    const deg = (r) => (r * 180) / Math.PI;
+    const fmt = (n) => String(Math.round(norm360(n))).padStart(3, "0") + "°";
+    const timeFmt = (s) => {
+      const t = Math.max(0, Math.floor(s * 10));
+      const m = Math.floor(t / 600);
+      const sec = Math.floor((t % 600) / 10);
+      return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${t % 10}`;
+    };
+
+    function bearing(from, to) {
+      return norm360(deg(Math.atan2(to.x - from.x, -(to.y - from.y))));
+    }
+
+    function pt(origin, brg, dist) {
+      return {
+        x: origin.x + Math.sin(rad(brg)) * dist,
+        y: origin.y - Math.cos(rad(brg)) * dist,
+      };
+    }
+
+    function Aircraft({ x, y, hdg }) {
+      return (
+        <g transform={`translate(${x} ${y}) rotate(${hdg})`}>
+          <path d="M0-24 L8 2 L34 10 L34 20 L5 14 L4 34 L-4 34 L-5 14 L-34 20 L-34 10 L-8 2 Z" fill="white" stroke="#0f172a" strokeWidth="2.5" />
+          <path d="M0-24 L0 32" stroke="#2563eb" strokeWidth="2" />
+          <circle r="4" fill="#2563eb" />
+        </g>
+      );
+    }
+
+    function Vor({ c }) {
+      return (
+        <g transform={`translate(${c.x} ${c.y})`}>
+          <circle r="28" fill="#e0f2fe" stroke="#0369a1" strokeWidth="3" />
+          <polygon points="0,-17 16,12 -16,12" fill="none" stroke="#0369a1" strokeWidth="3" />
+          <circle r="5" fill="#0369a1" />
+          <text y="52" textAnchor="middle" className="fill-slate-900 text-[18px] font-bold">VOR</text>
+        </g>
+      );
+    }
+
+    function Compass({ c, r }) {
+      const ticks = Array.from({ length: 72 }, (_, i) => i * 5);
+      return (
+        <g>
+          <circle cx={c.x} cy={c.y} r={r} fill="none" stroke="#94a3b8" strokeWidth="2" strokeDasharray="5 8" />
+          {ticks.map((m) => {
+            const a = pt(c, m, r - (m % 30 === 0 ? 16 : m % 10 === 0 ? 10 : 6));
+            const b = pt(c, m, r);
+            return <line key={m} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#64748b" strokeWidth={m % 30 === 0 ? 2.4 : 1.2} />;
+          })}
+          {Array.from({ length: 12 }, (_, i) => i * 30).map((m) => {
+            const p = pt(c, m, r - 35);
+            return <text key={m} x={p.x} y={p.y + 5} textAnchor="middle" className="fill-slate-500 text-[13px] font-semibold">{String(m).padStart(3, "0")}</text>;
+          })}
+          {[
+            { b: 0, label: "N" },
+            { b: 90, label: "E" },
+            { b: 180, label: "S" },
+            { b: 270, label: "W" },
+          ].map((item) => {
+            const p = pt(c, item.b, r + 26);
+            return <text key={item.label} x={p.x} y={p.y + 6} textAnchor="middle" className="fill-slate-900 text-[24px] font-black">{item.label}</text>;
+          })}
+        </g>
+      );
+    }
+
+    function halfDiskPath(c, r, centerBearing) {
+      const start = norm360(centerBearing - 90);
+      const mid = centerBearing;
+      const end = norm360(centerBearing + 90);
+      const p1 = pt(c, start, r);
+      const p2 = pt(c, mid, r);
+      const p3 = pt(c, end, r);
+      return `M ${c.x} ${c.y} L ${p1.x} ${p1.y} A ${r} ${r} 0 0 1 ${p2.x} ${p2.y} A ${r} ${r} 0 0 1 ${p3.x} ${p3.y} Z`;
+    }
+
+    function courseTextAngle(course) {
+      const a = norm180(course - 90);
+      if (a > 90) return a - 180;
+      if (a < -90) return a + 180;
+      return a;
+    }
+
+    function holdShape(fix, inbound, side, legNm) {
+      const leg = legNm * 22;
+      const width = 96;
+      const sign = side === "right" ? 1 : -1;
+      const off = { x: Math.cos(rad(inbound)) * sign * width, y: Math.sin(rad(inbound)) * sign * width };
+      const a = pt(fix, inbound + 180, leg);
+      const b = fix;
+      const c = { x: fix.x + off.x, y: fix.y + off.y };
+      const d = { x: a.x + off.x, y: a.y + off.y };
+      const sweep = side === "right" ? 1 : 0;
+      const rr = width / 2;
+      return {
+        path: `M ${a.x} ${a.y} L ${b.x} ${b.y} A ${rr} ${rr} 0 0 ${sweep} ${c.x} ${c.y} L ${d.x} ${d.y} A ${rr} ${rr} 0 0 ${sweep} ${a.x} ${a.y}`,
+        inboundStart: a,
+        fix: b,
+        outboundStart: c,
+        outboundEnd: d,
+        turnSide: side,
+        radius: rr,
+        outbound: norm360(inbound + 180),
+      };
+    }
+
+    function RMI({ hdg, qdm, radial }) {
+      const pointer = norm180(qdm - hdg);
+      const ticks = Array.from({ length: 72 }, (_, i) => i * 5);
+      const labels = Array.from({ length: 12 }, (_, i) => i * 30);
+      return (
+        <div className="rounded-3xl bg-slate-950 p-4 text-white shadow-xl border border-slate-700 overflow-hidden">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-[0.18em] text-sky-300">Indicador RMI</div>
+              <div className="text-lg font-black">Limbo movel</div>
+            </div>
+            <div className="rounded-2xl bg-slate-900 px-3 py-2 text-right text-[11px] font-bold leading-5 border border-slate-800">HDG {fmt(hdg)}<br />QDM {fmt(qdm)}</div>
+          </div>
+          <svg viewBox="0 0 300 300" className="mx-auto block h-[260px] w-full max-w-[300px]">
+            <defs>
+              <radialGradient id="rmiGlassReact" cx="50%" cy="35%" r="70%"><stop offset="0%" stopColor="#1e293b" /><stop offset="72%" stopColor="#020617" /><stop offset="100%" stopColor="#000" /></radialGradient>
+              <filter id="rmiGlowReact" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+            </defs>
+            <circle cx="150" cy="150" r="145" fill="#111827" stroke="#475569" strokeWidth="4" />
+            <circle cx="150" cy="150" r="128" fill="url(#rmiGlassReact)" stroke="#94a3b8" strokeWidth="2" />
+            <g transform="translate(150 150)">
+              {ticks.map((m) => {
+                const major = m % 30 === 0;
+                const medium = m % 10 === 0;
+                const sb = norm360(m - hdg);
+                const a = pt({ x: 0, y: 0 }, sb, major ? 96 : medium ? 101 : 106);
+                const b = pt({ x: 0, y: 0 }, sb, 118);
+                return <line key={m} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={major ? "#f8fafc" : "#cbd5e1"} strokeWidth={major ? 2.2 : medium ? 1.4 : 0.8} />;
+              })}
+              {labels.map((m) => {
+                const p = pt({ x: 0, y: 0 }, norm360(m - hdg), 78);
+                const txt = m === 0 ? "N" : m === 90 ? "E" : m === 180 ? "S" : m === 270 ? "W" : String(m / 10).padStart(2, "0");
+                return <text key={m} x={p.x} y={p.y + 5} textAnchor="middle" dominantBaseline="middle" className={m % 90 === 0 ? "fill-white text-[21px] font-black" : "fill-slate-200 text-[14px] font-extrabold"}>{txt}</text>;
+              })}
+            </g>
+            <polygon points="150,14 139,40 161,40" fill="#f8fafc" stroke="#0f172a" />
+            <line x1="150" y1="42" x2="150" y2="78" stroke="#f8fafc" strokeWidth="3" strokeLinecap="round" />
+            <rect x="198" y="24" width="72" height="30" rx="8" fill="#020617" stroke="#38bdf8" strokeWidth="1.5" />
+            <text x="234" y="36" textAnchor="middle" className="fill-slate-400 text-[8px] font-bold">HDG</text>
+            <text x="234" y="49" textAnchor="middle" className="fill-sky-100 text-[15px] font-black">{String(Math.round(norm360(hdg))).padStart(3, "0")}</text>
+            <g transform={`translate(150 150) rotate(${pointer})`}>
+              <line x1="0" y1="96" x2="0" y2="-92" stroke="#facc15" strokeWidth="6" strokeLinecap="round" filter="url(#rmiGlowReact)" />
+              <polygon points="0,-118 -12,-91 12,-91" fill="#facc15" stroke="#854d0e" />
+              <rect x="-7" y="76" width="14" height="27" rx="5" fill="#facc15" stroke="#854d0e" />
+            </g>
+            <g transform="translate(150 150)"><path d="M0-23 L7-1 L26 8 L26 14 L5 10 L4 26 L-4 26 L-5 10 L-26 14 L-26 8 L-7-1 Z" fill="#e2e8f0" stroke="#020617" strokeWidth="2" /><circle r="8" fill="#e2e8f0" stroke="#0f172a" strokeWidth="2" /></g>
+          </svg>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-2xl bg-slate-900 p-3 border border-slate-800"><div className="text-[11px] text-slate-400">Cabeca</div><div className="text-xl font-black text-yellow-300">{fmt(qdm)}</div><div className="text-[11px] text-slate-400">QDM / TO</div></div>
+            <div className="rounded-2xl bg-slate-900 p-3 border border-slate-800"><div className="text-[11px] text-slate-400">Cauda</div><div className="text-xl font-black text-sky-300">{fmt(radial)}</div><div className="text-[11px] text-slate-400">Radial</div></div>
+          </div>
+        </div>
+      );
+    }
+
+    function VORCDI({ obs, setObs, radial, qdm, selectedRadial }) {
+      const toSense = Math.abs(norm180(obs - qdm)) <= 90;
+      const flag = toSense ? "TO" : "FROM";
+      const rawDev = toSense
+        ? norm180(qdm - obs)
+        : norm180(obs - radial);
+      const limitedDev = Math.max(-10, Math.min(10, rawDev));
+      const dotSpacing = 11.2;
+      const barX = (limitedDev / 10) * dotSpacing * 5;
+      const ticks = Array.from({ length: 72 }, (_, i) => i * 5);
+      const labels = Array.from({ length: 12 }, (_, i) => i * 30);
+      const devText = Math.abs(rawDev) < 0.1 ? "CENTRADO" : `${rawDev > 0 ? "+" : ""}${rawDev.toFixed(1)}°`;
+
+      return (
+        <div className="rounded-3xl bg-white p-4 shadow-xl border border-slate-200">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-[0.18em] text-emerald-700">VOR analogico</div>
+              <div className="text-lg font-black text-slate-900">CDI / OBS</div>
+            </div>
+            <div className="rounded-2xl bg-slate-900 px-3 py-2 text-right text-[11px] font-bold leading-5 text-white">
+              OBS {fmt(obs)}<br />{flag}
+            </div>
+          </div>
+
+          <div className="mb-3 grid grid-cols-4 gap-2">
+            <button onClick={() => setObs((v) => norm360(v - 10))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">-10</button>
+            <button onClick={() => setObs((v) => norm360(v - 1))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">◀ 1</button>
+            <button onClick={() => setObs((v) => norm360(v + 1))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">1 ▶</button>
+            <button onClick={() => setObs((v) => norm360(v + 10))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">+10</button>
+          </div>
+
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <button onClick={() => setObs(selectedRadial)} className="rounded-xl bg-red-100 px-3 py-2 text-xs font-black text-red-900">OBS = radial selecionada</button>
+            <button onClick={() => setObs(radial)} className="rounded-xl bg-sky-100 px-3 py-2 text-xs font-black text-sky-900">OBS = radial atual</button>
+          </div>
+
+          <svg viewBox="0 0 320 320" className="mx-auto block h-[300px] w-full max-w-[320px]">
+            <defs>
+              <radialGradient id="vorGlassReact" cx="50%" cy="35%" r="70%"><stop offset="0%" stopColor="#f8fafc" /><stop offset="100%" stopColor="#e2e8f0" /></radialGradient>
+            </defs>
+            <circle cx="160" cy="160" r="150" fill="#dfe5ec" stroke="#94a3b8" strokeWidth="4" />
+            <circle cx="160" cy="160" r="130" fill="url(#vorGlassReact)" stroke="#cbd5e1" strokeWidth="2" />
+
+            <g transform="translate(160 160)">
+              {ticks.map((m) => {
+                const major = m % 30 === 0;
+                const medium = m % 10 === 0;
+                const sb = norm360(m - obs);
+                const a = pt({ x: 0, y: 0 }, sb, major ? 95 : medium ? 101 : 106);
+                const b = pt({ x: 0, y: 0 }, sb, 118);
+                return <line key={m} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={major ? "#0f172a" : "#475569"} strokeWidth={major ? 2.2 : medium ? 1.4 : 0.8} />;
+              })}
+              {labels.map((m) => {
+                const p = pt({ x: 0, y: 0 }, norm360(m - obs), 78);
+                const txt = m === 0 ? "N" : m === 90 ? "E" : m === 180 ? "S" : m === 270 ? "W" : String(m / 10).padStart(2, "0");
+                return <text key={m} x={p.x} y={p.y + 5} textAnchor="middle" dominantBaseline="middle" className={m % 90 === 0 ? "fill-slate-900 text-[20px] font-black" : "fill-slate-700 text-[14px] font-extrabold"}>{txt}</text>;
+              })}
+            </g>
+
+            <polygon points="160,12 150,33 170,33" fill="#ef4444" stroke="#7f1d1d" />
+            <rect x="126" y="36" width="68" height="30" rx="7" fill="#0f172a" stroke="#10b981" strokeWidth="1.5" />
+            <text x="160" y="47" textAnchor="middle" className="fill-emerald-300 text-[8px] font-bold">OBS</text>
+            <text x="160" y="60" textAnchor="middle" className="fill-white text-[16px] font-black">{String(Math.round(norm360(obs))).padStart(3, "0")}</text>
+
+            <line x1="104" y1="160" x2="216" y2="160" stroke="#334155" strokeWidth="2" />
+            {[-5, -4, -3, -2, -1, 1, 2, 3, 4, 5].map((n) => <circle key={n} cx={160 + n * dotSpacing} cy="160" r="3.8" fill="#64748b" />)}
+            <circle cx="160" cy="160" r="4.8" fill="#111827" />
+            <rect x={156 + barX} y="108" width="8" height="104" rx="4" fill="#111827" stroke="#000" />
+
+            {flag === "TO" ? (
+              <g><polygon points="160,104 146,128 174,128" fill="#10b981" stroke="#065f46" /><text x="160" y="96" textAnchor="middle" className="fill-emerald-700 text-[12px] font-black">TO</text></g>
+            ) : (
+              <g><polygon points="160,216 146,192 174,192" fill="#3b82f6" stroke="#1d4ed8" /><text x="160" y="234" textAnchor="middle" className="fill-sky-700 text-[12px] font-black">FROM</text></g>
+            )}
+
+            <g transform="translate(265 255)">
+              <circle r="28" fill="#cbd5e1" stroke="#64748b" strokeWidth="2" />
+              <circle r="18" fill="#94a3b8" stroke="#475569" strokeWidth="2" />
+              <g transform={`rotate(${obs})`}><line x1="0" y1="-18" x2="0" y2="-28" stroke="#111827" strokeWidth="3" strokeLinecap="round" /></g>
+              <text y="44" textAnchor="middle" className="fill-slate-600 text-[10px] font-bold">OBS</text>
+            </g>
+          </svg>
+
+          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-2xl bg-slate-50 p-3 border border-slate-200"><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Desvio</div><div className="mt-1 text-xl font-black text-slate-900">{devText}</div></div>
+            <div className="rounded-2xl bg-slate-50 p-3 border border-slate-200"><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Escala</div><div className="mt-1 text-xl font-black text-slate-900">2°/dot</div></div>
+          </div>
+        </div>
+      );
+    }
+
+    function Card({ title, value, tone = "text-slate-900" }) {
+      return <div className="rounded-2xl bg-white p-3 shadow-sm border border-slate-200"><div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{title}</div><div className={`mt-1 text-2xl font-black ${tone}`}>{value}</div></div>;
+    }
+
+    function TreinadorVORInterativo() {
+      const svgRef = useRef(null);
+      const center = { x: 380, y: 340 };
+      const mapRadius = 295;
+      const initial = { x: 500, y: 340 };
+      const [aircraft, setAircraft] = useState(initial);
+      const [heading, setHeading] = useState(90);
+      const [selectedRadial, setSelectedRadial] = useState(90);
+      const [obsCourse, setObsCourse] = useState(90);
+      const [dragging, setDragging] = useState(false);
+      const [rotating, setRotating] = useState(false);
+      const [showReciprocal, setShowReciprocal] = useState(true);
+      const [showToFromArea, setShowToFromArea] = useState(false);
+      const [showHolding, setShowHolding] = useState(false);
+      const [holdingInbound, setHoldingInbound] = useState(360);
+      const [holdingTurn, setHoldingTurn] = useState("right");
+      const [holdingLegNm, setHoldingLegNm] = useState(5);
+      const [isFlying, setIsFlying] = useState(false);
+      const [speedKt, setSpeedKt] = useState(140);
+      const [bankDeg, setBankDeg] = useState(0);
+      const [turnMode, setTurnMode] = useState("rate");
+      const [rateDegSec, setRateDegSec] = useState(0);
+      const [simRate, setSimRate] = useState(1);
+      const [elapsed, setElapsed] = useState(0);
+      const [chrono, setChrono] = useState(false);
+      const [track, setTrack] = useState([initial]);
+      const aircraftRef = useRef(initial);
+      const headingRef = useRef(90);
+      const flyTick = useRef(null);
+      const chronoTick = useRef(null);
+      const elapsedRef = useRef(0);
+
+      const qdm = useMemo(() => bearing(aircraft, center), [aircraft]);
+      const radial = useMemo(() => bearing(center, aircraft), [aircraft]);
+      const reciprocal = norm360(selectedRadial + 180);
+      const diffRadial = norm180(radial - selectedRadial);
+      const distanceNm = (Math.hypot(aircraft.x - center.x, aircraft.y - center.y) / 22).toFixed(1);
+      const bankRate = speedKt > 10 ? (1091 * Math.tan(rad(bankDeg))) / speedKt : 0;
+      const turnRate = turnMode === "rate" ? rateDegSec : bankRate;
+      const holding = useMemo(() => holdShape(center, holdingInbound, holdingTurn, holdingLegNm), [holdingInbound, holdingTurn, holdingLegNm]);
+      const toAreaPath = useMemo(() => halfDiskPath(center, mapRadius, obsCourse + 180), [obsCourse]);
+      const fromAreaPath = useMemo(() => halfDiskPath(center, mapRadius, obsCourse), [obsCourse]);
+
+      useEffect(() => { aircraftRef.current = aircraft; }, [aircraft]);
+      useEffect(() => { headingRef.current = heading; }, [heading]);
+
+      useEffect(() => {
+        if (!isFlying) { flyTick.current = null; return; }
+        let raf;
+        const tick = (now) => {
+          if (flyTick.current === null) flyTick.current = now;
+          const dt = Math.min((now - flyTick.current) / 1000, 0.25);
+          flyTick.current = now;
+          const newHdg = norm360(headingRef.current + turnRate * dt * simRate);
+          const step = (speedKt * 22 * simRate / 3600) * dt;
+          const proposed = pt(aircraftRef.current, newHdg, step);
+          const dx = proposed.x - center.x;
+          const dy = proposed.y - center.y;
+          const d = Math.hypot(dx, dy);
+          const max = mapRadius - 8;
+          const next = d > max ? { x: center.x + (dx / d) * max, y: center.y + (dy / d) * max } : proposed;
+          headingRef.current = newHdg;
+          aircraftRef.current = next;
+          setHeading(newHdg);
+          setAircraft(next);
+          setTrack((old) => {
+            const last = old[old.length - 1];
+            return !last || Math.hypot(last.x - next.x, last.y - next.y) > 7 ? [...old.slice(-95), next] : old;
+          });
+          if (d > max) { setIsFlying(false); flyTick.current = null; return; }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+      }, [isFlying, speedKt, turnRate, simRate]);
+
+      useEffect(() => {
+        if (!chrono) { chronoTick.current = null; return; }
+        let raf;
+        const tick = (now) => {
+          if (chronoTick.current === null) chronoTick.current = now;
+          const dt = Math.min((now - chronoTick.current) / 1000, 0.25);
+          chronoTick.current = now;
+          elapsedRef.current += dt * simRate;
+          setElapsed(elapsedRef.current);
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+      }, [chrono, simRate]);
+
+      function moveAircraft(clientX, clientY) {
+        setIsFlying(false);
+        const svg = svgRef.current;
+        if (!svg) return;
+        const p = svg.createSVGPoint();
+        p.x = clientX;
+        p.y = clientY;
+        const local = p.matrixTransform(svg.getScreenCTM().inverse());
+        const dx = local.x - center.x;
+        const dy = local.y - center.y;
+        const d = Math.hypot(dx, dy);
+        const max = mapRadius - 8;
+        const next = d > max ? { x: center.x + (dx / d) * max, y: center.y + (dy / d) * max } : { x: local.x, y: local.y };
+        setAircraft(next);
+        setTrack((old) => [...old.slice(-95), next]);
+      }
+
+      function rotateAircraft(clientX, clientY) {
+        setIsFlying(false);
+        const svg = svgRef.current;
+        if (!svg) return;
+        const p = svg.createSVGPoint();
+        p.x = clientX;
+        p.y = clientY;
+        const local = p.matrixTransform(svg.getScreenCTM().inverse());
+        setHeading(bearing(aircraftRef.current, local));
+      }
+
+      function randomHoldingScenario() {
+        const inbound = Math.floor(Math.random() * 360);
+        const side = Math.random() < 0.5 ? "right" : "left";
+        const leg = 5;
+        const approachToFix = Math.floor(Math.random() * 360);
+        const pos = pt(center, approachToFix + 180, mapRadius * (0.68 + Math.random() * 0.18));
+        setIsFlying(false);
+        setShowHolding(true);
+        setHoldingInbound(inbound);
+        setHoldingTurn(side);
+        setHoldingLegNm(leg);
+        setAircraft(pos);
+        setHeading(approachToFix);
+        setTurnMode("rate");
+        setRateDegSec(0);
+        setBankDeg(0);
+        setObsCourse(inbound);
+        setTrack([pos]);
+      }
+
+      function resetAll() {
+        setIsFlying(false);
+        setAircraft(initial);
+        setHeading(90);
+        setSelectedRadial(90);
+        setObsCourse(90);
+        setBankDeg(0);
+        setRateDegSec(0);
+        setTurnMode("rate");
+        setHoldingInbound(360);
+        setHoldingTurn("right");
+        setHoldingLegNm(5);
+        setChrono(false);
+        elapsedRef.current = 0;
+        chronoTick.current = null;
+        setElapsed(0);
+        setTrack([initial]);
+      }
+
+      const selEnd = pt(center, selectedRadial, mapRadius + 60);
+      const selStart = showReciprocal ? pt(center, reciprocal, mapRadius + 60) : center;
+      const actualEnd = pt(center, radial, mapRadius + 38);
+      const rotateHandle = pt(aircraft, heading, 78);
+      const isOnSelected = Math.abs(diffRadial) <= 4;
+
+      return (
+        <main className="min-h-screen bg-slate-100 p-3 text-slate-900 md:p-4 xl:p-5">
+          <div className="mx-auto max-w-[1800px]">
+            <div className="mb-5 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+              <div>
+                <div className="mb-2 inline-flex rounded-full bg-sky-100 px-3 py-1 text-sm font-semibold text-sky-800">Aula interativa de navegacao VOR</div>
+                <h1 className="text-3xl font-black tracking-tight md:text-4xl">Mapa superior + radial + RMI funcional</h1>
+                <p className="mt-2 max-w-3xl text-slate-600">Layout otimizado para aula: instrumentos alinhados à direita do mapa, barra refinada de voo logo abaixo e resumo/espera mais abaixo.</p>
+              </div>
+              <div className={`rounded-2xl px-4 py-3 text-sm font-bold shadow ${isOnSelected ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{isOnSelected ? "Sobre a radial selecionada" : `Fora da radial: ${Math.abs(Math.round(diffRadial))}°`}</div>
+            </div>
+
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
+              
+<section className="rounded-3xl bg-white p-4 shadow-xl border border-slate-200">
+                <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl bg-slate-50 p-3 border border-slate-200"><div className="mb-2 flex justify-between text-sm font-bold"><span>Radial</span><span>{fmt(selectedRadial)}</span></div><div className="flex items-center gap-2"><button onClick={() => setSelectedRadial((v) => norm360(v - 1))} className="h-10 w-10 rounded-xl bg-red-700 text-white font-black">◀</button><input className="w-full" type="range" min="0" max="359" value={selectedRadial} onChange={(e) => setSelectedRadial(Number(e.target.value))} /><button onClick={() => setSelectedRadial((v) => norm360(v + 1))} className="h-10 w-10 rounded-xl bg-red-700 text-white font-black">▶</button></div></div>
+                  <div className="rounded-2xl bg-slate-50 p-3 border border-slate-200"><div className="mb-2 flex justify-between text-sm font-bold"><span>Proa</span><span>{fmt(heading)}</span></div><div className="grid grid-cols-4 gap-2"><button onClick={() => setHeading((v) => norm360(v - 10))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">-10</button><button onClick={() => setHeading((v) => norm360(v - 1))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">◀1</button><button onClick={() => setHeading((v) => norm360(v + 1))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">1▶</button><button onClick={() => setHeading((v) => norm360(v + 10))} className="rounded-xl bg-slate-900 px-2 py-2 text-xs font-black text-white">+10</button></div><div className="mt-2 rounded-xl bg-white px-3 py-2 text-center text-xs font-semibold text-slate-600 border">359° → 000° → 001°</div></div>
+                  <button onClick={() => setShowReciprocal((v) => !v)} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white shadow-sm leading-tight">
+                    <div>Reciproca</div>
+                    <div className="text-[10px] font-bold opacity-80">{showReciprocal ? "Ocultar" : "Mostrar"}</div>
+                  </button>
+                  <button onClick={() => setShowToFromArea((v) => !v)} className={`rounded-xl px-3 py-2 text-xs font-black text-white shadow-sm leading-tight ${showToFromArea ? "bg-emerald-700" : "bg-slate-900"}`}>
+                    <div>TO / FROM</div>
+                    <div className="text-[10px] font-bold opacity-80">{showToFromArea ? "Ocultar" : "Mostrar"}</div>
+                  </button>
+                </div>
+
+                <svg
+                  ref={svgRef}
+                  viewBox="0 0 820 700"
+                  className="h-[560px] xl:h-[610px] w-full rounded-3xl bg-[#eef6ef] border border-slate-200 select-none"
+                  onPointerMove={(e) => {
+                    if (rotating) rotateAircraft(e.clientX, e.clientY);
+                    else if (dragging) moveAircraft(e.clientX, e.clientY);
+                  }}
+                  onPointerUp={() => { setDragging(false); setRotating(false); }}
+                  onPointerLeave={() => { setDragging(false); setRotating(false); }}
+                >
+                  <defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0 L0 0 0 30" fill="none" stroke="#cbd5e1" strokeWidth="1" opacity="0.55" /></pattern><linearGradient id="mapBg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stopColor="#ecfeff" /><stop offset="1" stopColor="#f7fee7" /></linearGradient><marker id="arrowYellow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#facc15" /></marker><marker id="arrowViolet" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7c3aed" /></marker></defs>
+                  <rect width="820" height="700" fill="url(#mapBg)" /><rect width="820" height="700" fill="url(#grid)" /><path d="M30 575 C190 525,270 640,430 575 S675 480,790 575" fill="none" stroke="#86efac" strokeWidth="32" opacity="0.28" /><path d="M70 95 C190 145,255 75,390 124 S660 185,760 110" fill="none" stroke="#93c5fd" strokeWidth="18" opacity="0.28" />
+                  {showToFromArea && (
+                    <g>
+                      <path d={toAreaPath} fill="#10b981" opacity="0.18" />
+                      <path d={fromAreaPath} fill="#3b82f6" opacity="0.18" />
+                      <line x1={pt(center, obsCourse + 90, mapRadius).x} y1={pt(center, obsCourse + 90, mapRadius).y} x2={pt(center, obsCourse - 90, mapRadius).x} y2={pt(center, obsCourse - 90, mapRadius).y} stroke="#334155" strokeWidth="2" strokeDasharray="8 8" opacity="0.65" />
+                      <text x={pt(center, obsCourse + 180, mapRadius * 0.55).x} y={pt(center, obsCourse + 180, mapRadius * 0.55).y} textAnchor="middle" className="fill-emerald-800 text-[22px] font-black" opacity="0.85">TO</text>
+                      <text x={pt(center, obsCourse, mapRadius * 0.55).x} y={pt(center, obsCourse, mapRadius * 0.55).y} textAnchor="middle" className="fill-blue-800 text-[22px] font-black" opacity="0.85">FROM</text>
+                    </g>
+                  )}
+                  <Compass c={center} r={mapRadius} />
+                  {showHolding && (() => {
+                    const sideSign = holdingTurn === "right" ? 1 : -1;
+
+                    const inboundMid = {
+                      x: holding.inboundStart.x + (center.x - holding.inboundStart.x) * 0.56,
+                      y: holding.inboundStart.y + (center.y - holding.inboundStart.y) * 0.56,
+                    };
+                    const outboundMid = {
+                      x: holding.outboundStart.x + (holding.outboundEnd.x - holding.outboundStart.x) * 0.52,
+                      y: holding.outboundStart.y + (holding.outboundEnd.y - holding.outboundStart.y) * 0.52,
+                    };
+
+                    const inboundLabel = pt(inboundMid, holdingInbound + sideSign * 90, 14);
+                    const outboundLabel = pt(outboundMid, holding.outbound + sideSign * 90, 14);
+
+                    const arrowCenter = {
+                      x: holding.outboundStart.x + (holding.outboundEnd.x - holding.outboundStart.x) * 0.42,
+                      y: holding.outboundStart.y + (holding.outboundEnd.y - holding.outboundStart.y) * 0.42,
+                    };
+                    const arrowStart = pt(arrowCenter, holding.outbound + 180, 18);
+                    const arrowTip = pt(arrowCenter, holding.outbound, 18);
+                    const arrowLeft = pt(arrowTip, holding.outbound - 150, 13);
+                    const arrowRight = pt(arrowTip, holding.outbound + 150, 13);
+
+                    return (
+                      <g>
+                        <path
+                          d={holding.path}
+                          fill="none"
+                          stroke="#7c3aed"
+                          strokeWidth="4"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          opacity="0.98"
+                        />
+
+                        <line
+                          x1={holding.inboundStart.x}
+                          y1={holding.inboundStart.y}
+                          x2={center.x}
+                          y2={center.y}
+                          stroke="#8b5cf6"
+                          strokeWidth="3"
+                          strokeDasharray="6 5"
+                          strokeLinecap="round"
+                          opacity="0.95"
+                        />
+                        <line
+                          x1={holding.inboundStart.x}
+                          y1={holding.inboundStart.y}
+                          x2={center.x}
+                          y2={center.y}
+                          stroke="#ede9fe"
+                          strokeWidth="1.35"
+                          strokeDasharray="6 5"
+                          strokeLinecap="round"
+                          opacity="0.98"
+                        />
+
+                        <circle
+                          cx={holding.inboundStart.x}
+                          cy={holding.inboundStart.y}
+                          r="4.2"
+                          fill="#8b5cf6"
+                        />
+
+                        <line
+                          x1={arrowStart.x}
+                          y1={arrowStart.y}
+                          x2={arrowTip.x}
+                          y2={arrowTip.y}
+                          stroke="#7c3aed"
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          opacity="0.99"
+                        />
+                        <polygon
+                          points={`${arrowTip.x},${arrowTip.y} ${arrowLeft.x},${arrowLeft.y} ${arrowRight.x},${arrowRight.y}`}
+                          fill="#7c3aed"
+                          opacity="0.99"
+                        />
+
+                        <g transform={`translate(${inboundLabel.x} ${inboundLabel.y}) rotate(${courseTextAngle(holdingInbound)})`}>
+                          <text
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            className="fill-violet-700 text-[13px] font-black"
+                          >
+                            {fmt(holdingInbound)}
+                          </text>
+                        </g>
+                        <g transform={`translate(${outboundLabel.x} ${outboundLabel.y}) rotate(${courseTextAngle(holding.outbound)})`}>
+                          <text
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            className="fill-violet-700 text-[13px] font-black"
+                          >
+                            {fmt(holding.outbound)}
+                          </text>
+                        </g>
+                      </g>
+                    );
+                  })()}
+                  {track.length > 1 && <polyline points={track.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#0f172a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.28" />}
+                  <line x1={selStart.x} y1={selStart.y} x2={selEnd.x} y2={selEnd.y} stroke="#ef4444" strokeWidth="5" strokeLinecap="round" opacity="0.94" /><text x={selEnd.x} y={selEnd.y - 10} textAnchor="middle" className="fill-red-700 text-[16px] font-black">Radial {fmt(selectedRadial)}</text>{showReciprocal && <text x={selStart.x} y={selStart.y + 23} textAnchor="middle" className="fill-red-500 text-[13px] font-bold">Reciproca {fmt(reciprocal)}</text>}
+                  <line x1={center.x} y1={center.y} x2={actualEnd.x} y2={actualEnd.y} stroke="#0284c7" strokeWidth="3" strokeDasharray="10 10" opacity="0.78" /><text x={actualEnd.x} y={actualEnd.y + 18} textAnchor="middle" className="fill-sky-700 text-[13px] font-black">Radial atual {fmt(radial)}</text>
+                  <line x1={aircraft.x} y1={aircraft.y} x2={center.x} y2={center.y} stroke="#facc15" strokeWidth="4" strokeDasharray="8 8" markerEnd="url(#arrowYellow)" opacity="0.9" /><text x={(aircraft.x + center.x) / 2 + 12} y={(aircraft.y + center.y) / 2 - 10} className="fill-yellow-700 text-[13px] font-black">QDM {fmt(qdm)}</text>
+                  <Vor c={center} />
+
+                  <line
+                    x1={aircraft.x}
+                    y1={aircraft.y}
+                    x2={rotateHandle.x}
+                    y2={rotateHandle.y}
+                    stroke="#6366f1"
+                    strokeWidth="2"
+                    strokeDasharray="5 5"
+                    opacity="0.9"
+                  />
+
+                  <g
+                    transform={`translate(${rotateHandle.x} ${rotateHandle.y})`}
+                    style={{ cursor: "grab" }}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      setRotating(true);
+                      setDragging(false);
+                      rotateAircraft(e.clientX, e.clientY);
+                    }}
+                  >
+                    <circle r="21" fill="#eef2ff" stroke="#4f46e5" strokeWidth="3" />
+                    <text y="7" textAnchor="middle" className="fill-indigo-700 text-[22px] font-black">↻</text>
+                  </g>
+
+                  <g
+                    onPointerDown={(e) => {
+                      setDragging(true);
+                      setRotating(false);
+                      moveAircraft(e.clientX, e.clientY);
+                    }}
+                    style={{ cursor: dragging ? "grabbing" : "grab" }}
+                  >
+                    <circle cx={aircraft.x} cy={aircraft.y} r="48" fill="transparent" />
+                    <Aircraft x={aircraft.x} y={aircraft.y} hdg={heading} />
+                  </g>
+
+                  <g transform="translate(36 560)"><rect width="220" height="108" rx="20" fill="white" opacity="0.92" stroke="#cbd5e1" /><text x="18" y="30" className="fill-slate-900 text-[16px] font-black">Para demonstrar</text><text x="18" y="55" className="fill-slate-700 text-[13px] font-semibold">1. Arraste o avião</text><text x="18" y="75" className="fill-slate-700 text-[13px] font-semibold">2. Use ↻ para girar</text><text x="18" y="95" className="fill-slate-700 text-[13px] font-semibold">3. Observe VOR/RMI</text></g>
+                </svg>
+
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-2 shadow-sm">
+  <div className="mb-1.5 flex items-center justify-between">
+    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Controles de voo</div>
+  </div>
+
+  <div className="grid gap-1.5 md:grid-cols-2 xl:grid-cols-8">
+    <label className="rounded-xl bg-white p-2 border border-slate-200 shadow-sm">
+      <div className="mb-1 flex justify-between text-[11px] font-bold"><span>Velocidade</span><span>{speedKt} kt</span></div>
+      <input className="w-full" type="range" min="60" max="260" step="5" value={speedKt} onChange={(e) => setSpeedKt(Number(e.target.value))} />
+    </label>
+
+    <label className="rounded-xl bg-white p-2 border border-slate-200 shadow-sm">
+      <div className="mb-1 flex justify-between text-[11px] font-bold"><span>Bank</span><span>{bankDeg > 0 ? "+" : ""}{bankDeg}°</span></div>
+      <div className="flex items-center gap-1">
+        <button onClick={() => { setTurnMode("bank"); setBankDeg((v) => Math.max(-35, v - 1)); }} className="h-7 w-7 rounded-lg bg-slate-900 text-[11px] text-white font-black">◀</button>
+        <input className="w-full" type="range" min="-35" max="35" step="1" value={bankDeg} onChange={(e) => { setTurnMode("bank"); setBankDeg(Number(e.target.value)); }} />
+        <button onClick={() => { setTurnMode("bank"); setBankDeg((v) => Math.min(35, v + 1)); }} className="h-7 w-7 rounded-lg bg-slate-900 text-[11px] text-white font-black">▶</button>
+      </div>
+    </label>
+
+    <button onClick={() => setIsFlying((v) => !v)} className={`rounded-xl px-2.5 py-2 text-[11px] font-black text-white shadow-sm ${isFlying ? "bg-rose-600" : "bg-emerald-600"}`}>
+      {isFlying ? "Pausar voo" : "Iniciar voo"}
+    </button>
+
+    <label className="rounded-xl bg-white p-2 border border-slate-200 shadow-sm">
+      <div className="mb-1 flex justify-between text-[11px] font-bold"><span>Tempo</span><span>{simRate}x</span></div>
+      <input className="w-full" type="range" min="1" max="80" step="1" value={simRate} onChange={(e) => setSimRate(Number(e.target.value))} />
+    </label>
+
+    <div className="rounded-xl bg-white p-2 border border-slate-200 shadow-sm">
+      <div className="mb-1 flex justify-between text-[11px] font-bold"><span>Razao</span><span>{rateDegSec > 0 ? "+" : ""}{rateDegSec.toFixed(1)}°/s</span></div>
+      <div className="flex items-center gap-1">
+        <button onClick={() => { setTurnMode("rate"); setRateDegSec((v) => Math.max(-6, +(v - 0.5).toFixed(1))); }} className="h-7 w-7 rounded-lg bg-slate-900 text-[11px] text-white font-black">◀</button>
+        <input className="w-full" type="range" min="-6" max="6" step="0.5" value={rateDegSec} onChange={(e) => { setTurnMode("rate"); setRateDegSec(Number(e.target.value)); }} />
+        <button onClick={() => { setTurnMode("rate"); setRateDegSec((v) => Math.min(6, +(v + 0.5).toFixed(1))); }} className="h-7 w-7 rounded-lg bg-slate-900 text-[11px] text-white font-black">▶</button>
+      </div>
+    </div>
+
+    <div className="rounded-xl bg-slate-900 p-2 text-white shadow-sm">
+      <div className="text-[9px] uppercase tracking-[0.16em] text-slate-400">Curva</div>
+      <div className="mt-0.5 text-[11px] font-black leading-tight">{turnRate >= 0 ? "Direita" : "Esquerda"} {Math.abs(turnRate).toFixed(1)}°/s</div>
+      <div className="text-[9px] text-slate-400 leading-tight">{turnMode === "rate" ? "razao fixa" : "bank real"} | sim {(Math.abs(turnRate) * simRate).toFixed(1)}°/s</div>
+    </div>
+
+    <div className="rounded-xl bg-sky-50 p-2 text-sky-950 border border-sky-100 shadow-sm">
+      <div className="text-[9px] uppercase tracking-[0.16em] text-sky-700">Rapidos</div>
+      <div className="mt-1 flex gap-1">
+        <button onClick={() => { setTurnMode("bank"); setBankDeg(-25); }} className="flex-1 rounded-lg bg-sky-900 px-1.5 py-1.5 text-[10px] font-black text-white">Bank E</button>
+        <button onClick={() => { setTurnMode("rate"); setRateDegSec(0); setBankDeg(0); }} className="flex-1 rounded-lg bg-slate-900 px-1.5 py-1.5 text-[10px] font-black text-white">Nivelar</button>
+        <button onClick={() => { setTurnMode("bank"); setBankDeg(25); }} className="flex-1 rounded-lg bg-sky-900 px-1.5 py-1.5 text-[10px] font-black text-white">Bank D</button>
+      </div>
+    </div>
+
+    <div className="rounded-xl bg-white p-2 shadow-sm border border-slate-200">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div>
+          <div className="text-[9px] uppercase tracking-[0.16em] text-slate-500">Cronometro</div>
+          <div className="font-mono text-lg font-black leading-none">{timeFmt(elapsed)}</div>
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        <button onClick={() => setChrono((v) => !v)} className={`rounded-lg px-1.5 py-1.5 text-[10px] font-black text-white ${chrono ? "bg-rose-600" : "bg-emerald-600"}`}>{chrono ? "Paus." : "Inic."}</button>
+        <button onClick={() => { setChrono(false); elapsedRef.current = 0; chronoTick.current = null; setElapsed(0); }} className="rounded-lg bg-slate-900 px-1.5 py-1.5 text-[10px] font-black text-white">Zer.</button>
+        <button onClick={resetAll} className="rounded-lg bg-white px-1.5 py-1.5 text-[10px] font-black text-slate-900 border border-slate-200">Reset</button>
+        <button onClick={() => setTrack([aircraft])} className="rounded-lg bg-amber-50 px-1.5 py-1.5 text-[10px] font-black text-amber-900 border border-amber-100">Trilha</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <Card title="HDG" value={fmt(heading)} tone="text-indigo-700" />
+                  <Card title="OBS" value={fmt(obsCourse)} tone="text-emerald-700" />
+                  <Card title="Radial atual" value={fmt(radial)} tone="text-sky-700" />
+                  <Card title="Bearing TO" value={fmt(qdm)} tone="text-yellow-600" />
+                  <Card title="Distancia" value={`${distanceNm} NM`} />
+                  <Card title="Velocidade / curva" value={`${speedKt} kt · ${turnRate.toFixed(1)}°/s`} />
+                </div>
+
+                <div className="mt-4 rounded-3xl border border-violet-100 bg-violet-50 p-4 shadow-sm">
+                  <div className="mb-3 flex flex-col justify-between gap-3 md:flex-row md:items-center"><div><div className="text-xs font-black uppercase tracking-[0.18em] text-violet-700">Espera sobre o fixo</div><div className="text-sm font-semibold text-violet-950">Escolha inbound e lado da curva. Aleatorio cria um cenario de entrada.</div></div><div className="flex gap-2"><button onClick={randomHoldingScenario} className="rounded-2xl bg-amber-500 px-4 py-3 text-sm font-black text-white">Aleatorio</button><button onClick={() => setShowHolding((v) => !v)} className={`rounded-2xl px-4 py-3 text-sm font-black text-white ${showHolding ? "bg-violet-700" : "bg-slate-900"}`}>{showHolding ? "Ocultar espera" : "Adicionar espera"}</button></div></div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl bg-white p-3 border border-violet-100"><div className="mb-2 flex justify-between text-sm font-bold"><span>Inbound</span><span>{fmt(holdingInbound)}</span></div><div className="flex items-center gap-2"><button onClick={() => setHoldingInbound((v) => norm360(v - 1))} className="h-10 w-10 rounded-xl bg-violet-700 text-white font-black">◀</button><input className="w-full" type="range" min="0" max="359" value={holdingInbound} onChange={(e) => setHoldingInbound(Number(e.target.value))} /><button onClick={() => setHoldingInbound((v) => norm360(v + 1))} className="h-10 w-10 rounded-xl bg-violet-700 text-white font-black">▶</button></div><div className="mt-2 grid grid-cols-2 gap-2"><button onClick={() => setHoldingInbound((v) => norm360(v - 10))} className="rounded-xl bg-violet-100 px-3 py-2 text-xs font-black text-violet-900">-10</button><button onClick={() => setHoldingInbound((v) => norm360(v + 10))} className="rounded-xl bg-violet-100 px-3 py-2 text-xs font-black text-violet-900">+10</button></div></div>
+                    <div className="rounded-2xl bg-white p-3 border border-violet-100"><div className="mb-2 text-sm font-bold">Tipo</div><div className="grid grid-cols-2 gap-2"><button onClick={() => setHoldingTurn("right")} className={`rounded-xl px-3 py-3 text-sm font-black ${holdingTurn === "right" ? "bg-violet-700 text-white" : "bg-slate-100 text-slate-800"}`}>Padrao<br /><span className="text-xs">direita</span></button><button onClick={() => setHoldingTurn("left")} className={`rounded-xl px-3 py-3 text-sm font-black ${holdingTurn === "left" ? "bg-violet-700 text-white" : "bg-slate-100 text-slate-800"}`}>Nao padrao<br /><span className="text-xs">esquerda</span></button></div><div className="mt-3 rounded-xl bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900 border">Outbound {fmt(holding.outbound)}</div></div>
+                    <label className="rounded-2xl bg-white p-3 border border-violet-100"><div className="mb-2 flex justify-between text-sm font-bold"><span>Perna</span><span>{holdingLegNm} NM</span></div><input className="w-full" type="range" min="2" max="8" step="0.5" value={holdingLegNm} onChange={(e) => setHoldingLegNm(Number(e.target.value))} /><div className="mt-3 text-xs font-semibold text-slate-600">Ajuste visual/didatico.</div></label>
+                  </div>
+                </div>
+              </section>
+
+
+              <aside className="space-y-5 min-w-0 lg:sticky lg:top-4 self-start">
+                <RMI hdg={heading} qdm={qdm} radial={radial} />
+                <VORCDI obs={obsCourse} setObs={setObsCourse} radial={radial} qdm={qdm} selectedRadial={selectedRadial} />
+                <div className="rounded-3xl bg-white p-5 shadow-xl border border-slate-200"><div className="text-sm uppercase tracking-[0.18em] text-slate-500 font-black">Resumo</div><ul className="mt-3 space-y-2 text-sm leading-6 text-slate-700"><li><b>Radial:</b> sai da estacao.</li><li><b>QDM:</b> direcao para o VOR.</li><li><b>RMI:</b> cabeca vai para a estacao; cauda mostra a radial.</li><li><b>Espera:</b> padrao direita; nao padrao esquerda.</li><li><b>Inbound:</b> perna que chega no fixo.</li></ul></div>
+                <div className="rounded-3xl bg-violet-50 p-5 shadow-xl border border-violet-100"><div className="text-sm uppercase tracking-[0.18em] text-violet-700 font-black">Espera</div><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><Card title="Inbound" value={fmt(holdingInbound)} tone="text-violet-900" /><Card title="Outbound" value={fmt(holding.outbound)} tone="text-violet-900" /><Card title="Tipo" value={holdingTurn === "right" ? "Padrao" : "Nao padrao"} tone="text-violet-900" /><Card title="Curva" value={holdingTurn === "right" ? "Direita" : "Esquerda"} tone="text-violet-900" /></div></div>
+              </aside>
+            </div>
+          </div>
+        </main>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<TreinadorVORInterativo />);
+  </script>
+</body>
+</html>
